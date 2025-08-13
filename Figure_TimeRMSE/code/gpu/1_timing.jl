@@ -20,6 +20,7 @@ begin
     using LinearAlgebra
     using StatsBase
     using BenchmarkTools
+    using DiffEqGPU
     using DifferentialEquations
 end
 
@@ -30,7 +31,7 @@ CUDA.memory_status()
 
 n_latent_species = 6
 
-n_sim = 1000
+#################### Part 1: generate reference data ####################
 ndays = 10
 
 saveat = 60.0
@@ -45,10 +46,10 @@ startspec = 1
 
 seed=1234
 Random.seed!(seed)
-
+# initialize an encoder, create functions of encoding/decoding processes
 encoder = abs.(Flux.glorot_uniform(Random.seed!(seed), n_latent_species, n_species)) 
 size_encoder = size(reshape(encoder,:))[1]
-
+#encoder = ones(n_latent_species, n_species) .* 1e-3 
 function encoder_(encoder,X_3d,batchsize)
     X_2d = reshape(X_3d,(n_species,:))
     x_2d = encoder * X_2d
@@ -60,33 +61,50 @@ function decoder_(decoder,x_3d,batchsize)
     X_2d = decoder' * x_2d
     X_3d = reshape(X_2d,(n_species,:, batchsize))
 end
-
+#n_latent_species = 10
 n_latent_emit_species = n_latent_species
 
-JLD2.@load "c_test_utils.jld" ref_data_max ref_data_min dc_std
-JLD2.@load "testing_set.jld" ref_data_test ref_emit_test ref_params_test specname
+path_ = ""
+JLD2.@load path_*"c_test_utils.jld" ref_data_max ref_data_min dc_std
+JLD2.@load path_*"../../1_dataset_preprocess/testing_set.jld" ref_data_test ref_emit_test ref_params_test specname
 
-model_params_test = ref_params_test
+model_params_test = ref_params_test#ref_params
 sza = model_params_test[4:4,:,:]
 model_params_test = cat(model_params_test[2:2,:,:],model_params_test[5:5,:,:], model_params_test[4:4,:,:]; dims=1)
-
 # Sympolics
+
 ## mete and emit
-@parameters sza press tempk
-@parameters emit[1:n_latent_species]
+@parameters sza press tempk1 tempk2
+@parameters emit[1:n_latent_emit_species]
+#k = Num[sza; press; tempk/100.0; emit]
 @parameters k[1:size(model_params_test)[1]]
+#number of latent reaction rate Constant
 k = Num[
     sza;
+    
+    #sza1;
+    #sza2;
+    #cos(sza);
+    #sin(sza.*2.0);
+    #cos(sza.*2.0);
     press;
-    tempk;
+    #(tempk^2)*exp(tempk^-1);
+    tempk1;
+    tempk2;
+    #emit;
+    #cos(sza);
+    #sin(sza);
     ]
-
 k_params_test = cat(max.(cos.(model_params_test[3:3,:,:]), 0),
                model_params_test[2:2,:,:], 
+               #(model_params[1:1,:,:].^2).*exp.(model_params[1:1,:,:].^-1),
                exp.(model_params_test[1:1,:,:].^-1),
+               exp.((model_params_test[1:1,:,:].^-1).*(-1)),
+               #model_params[4:end,:,:]
+               #cos.(model_params[4:4,:,:])
+               #sin.(model_params[4:4,:,:])
                ;dims=1
               )
-
 
 
 
@@ -209,8 +227,12 @@ function calc_basis_size(u)
     n_latent_rxn_constant = length(k)
 
     simady_basis_size = nrxn * n_latent_rxn_constant
-    basis_size = simady_basis_size
-    @parameters ξ[1:basis_size]
+    
+    #emis_basis_size = n_latent_emit_species #* n_latent_emit_species
+    basis_size = simady_basis_size #+ emis_basis_size
+    ## sparse coefficient ξ
+    
+    @parameters ξ[1:basis_size] #[bounds=(0.0, Inf)]
 
 
     function create_basis(T, u, ξ, basis_size, n_rxn, nrate)
@@ -322,23 +344,31 @@ function calc_basis_size(u)
         rxs, umat
     end
 
+
 basis, umat = create_basis(Float64, u, ξ, simady_basis_size, nrxn, n_latent_rxn_constant)
 #basis = basis 
 umat = umat #|> gpu
 rsys = ReactionSystem(basis; name=:simady)
 stoich = netstoichmat(rsys) #|> gpu
 basis
-JLD2.@load "epoch_5000.jld" ps_cpu
-ps = ps_cpu
+
+JLD2.@load path_*"model/simady/stage_5_n_latent_species_$(n_latent_species).jld"   ps_cpu
+
+ps = (ps_cpu)
 encoder, sparse_coeff = ps[1:size_encoder], ps[size_encoder+1:end]
 encoder = reshape(encoder,(n_latent_species,:))
+
 
 rates_ = []
 for i in 0:size(basis)[1]-1
    
-basis_ = substitute(basis[i+1].rate, Dict(ξ[i*3+1]=> (sparse_coeff)[i*3+1]))
-basis_ = substitute(basis_, Dict(ξ[i*3+2]=> (sparse_coeff)[i*3+2]))
-basis_ = substitute(basis_, Dict(ξ[i*3+3]=> (sparse_coeff)[i*3+3]))
+basis_ = substitute(basis[i+1].rate, Dict(ξ[i*4+1]=> (sparse_coeff)[i*4+1]))
+basis_ = substitute(basis_, Dict(ξ[i*4+2]=> (sparse_coeff)[i*4+2]))
+basis_ = substitute(basis_, Dict(ξ[i*4+3]=> (sparse_coeff)[i*4+3]))
+basis_ = substitute(basis_, Dict(ξ[i*4+4]=> (sparse_coeff)[i*4+4]))
+#basis_ = substitute(basis_, Dict(sza => mean(k_params[1,:,1])))
+#basis_ = substitute(basis_, Dict(press => mean(k_params[2,:,1])))
+#basis_ = substitute(basis_, Dict(tempk => mean(k_params[3,:,1])))
     push!(rates_, basis_)
 end
 rates_
@@ -347,9 +377,11 @@ filtered_basis = []
 for i in 1-1:length(rates_)-1
     if rates_[i+1] !== 0f0
         temp_basis = basis[i+1]
-        basis_ = substitute(temp_basis.rate, Dict(ξ[i*3+1]=> (sparse_coeff)[i*3+1]))
-        basis_ = substitute(basis_, Dict(ξ[i*3+2]=> (sparse_coeff)[i*3+2]))
-        basis_ = substitute(basis_, Dict(ξ[i*3+3]=> (sparse_coeff)[i*3+3]))
+        #temp_basis = @set temp_basis.rate = 1.0
+        basis_ = substitute(temp_basis.rate, Dict(ξ[i*4+1]=> (sparse_coeff)[i*4+1]))
+        basis_ = substitute(basis_, Dict(ξ[i*4+2]=> (sparse_coeff)[i*4+2]))
+        basis_ = substitute(basis_, Dict(ξ[i*4+3]=> (sparse_coeff)[i*4+3]))
+        basis_ = substitute(basis_, Dict(ξ[i*4+4]=> (sparse_coeff)[i*4+4]))
         temp_basis = @set temp_basis.rate = basis_
         push!(filtered_basis, temp_basis)
         
@@ -363,16 +395,11 @@ for i in 1:size(rates_)[1]
         push!(reaction_index, i)
     end
 end
-reaction_index = []
-for i in 1:size(rates_)[1]
-    if rates_[i] !== 0.0f0
-        push!(reaction_index, i)
-    end
-end
+
 sparse_coeff_filtered = []
-for i in 1:size(sparse_coeff)[1]÷3
-    if sparse_coeff[(i-1)*3+1] !== 0f0 || sparse_coeff[(i-1)*3+2] !== 0f0 || sparse_coeff[(i-1)*3+3] !== 0f0
-        push!(sparse_coeff_filtered, sparse_coeff[(i-1)*3+1], sparse_coeff[(i-1)*3+2], sparse_coeff[(i-1)*3+3])
+for i in 1:size(sparse_coeff)[1]÷4
+    if sparse_coeff[(i-1)*4+1] !== 0f0 || sparse_coeff[(i-1)*4+2] !== 0f0 || sparse_coeff[(i-1)*4+3] !== 0f0 || sparse_coeff[(i-1)*4+4] !== 0f0
+        push!(sparse_coeff_filtered, sparse_coeff[(i-1)*4+1], sparse_coeff[(i-1)*4+2], sparse_coeff[(i-1)*4+3], sparse_coeff[(i-1)*4+4])
     end
 end
 sparse_coeff_filtered = Float64.(sparse_coeff_filtered)
@@ -383,6 +410,8 @@ stoich_filtered = stoich[:,reaction_index]
 
 umat_filtered_gpu = cu(umat_filtered)
 stoich_filtered_gpu = cu(stoich_filtered)
+
+
 
 
 
@@ -399,12 +428,20 @@ end
 
 
 function dudt(ps, k, u, stoich, umat, weight, i_case)
-
+    #ξ_simady = ps[1:simady_basis_size]
+    #ξ_emis = ps[simady_basis_size+1:simady_basis_size+emis_basis_size]
+    #ξ, ps_nn = ps[1:basis_size], ps[basis_size+1:end]
+    #nn = re(ps_nn)
     u = reshape(u, (size(u)[1],:))
     k = reshape(k, (size(k)[1],:))
+    #k_emit = reshape(k_emit, (size(k_emit)[1],:))
     oneplusu = [1; u]
-    ratelaws = oderatelaws(ps, k, oneplusu, umat, i_case)
+    ratelaws = oderatelaws(ps, k, oneplusu, umat, i_case)# for (col_k, col_u) in (eachcol(k), eachcol(oneplusu))]...;dims=2)
+    #ξ_emis_mat = abs.(ξ_emis)#transpose(reshape(ξ_emis, n_latent_emit_species, n_latent_emit_species))
+    #println(size(ξ_emis_mat))
+    #println(size(k_emit))
     ratelaws = reshape(ratelaws, size(stoich)[2], :)
+     #.+ (ξ_emis_mat .* k_emit)
     reshape((stoich * ratelaws), n_latent_species, size(times)[1], size(i_case)[1])
 end
 
@@ -416,15 +453,18 @@ ref_emit_test_encoded = encoder_(encoder, (ref_emit_test), nruns)
 ref_data_test_encoded = encoder_(encoder, (ref_data_test), nruns)
 
 
-
+#begin
+    #(ps, dataset, dc_std) sparse_coeff, [(ref_data_test_encoded), (ref_emit_test_encoded), (k_params_test)], dc_std)
     println("run test case, surrogate model, GPU:")
     sparse_coeff_filtered_gpu = cu(sparse_coeff_filtered)
+    #c, e, P = dataset
+    #|> cpu#.*  latent_species_dcdt_std  .+ e[:,:,i_case].*60)
     e = cu(ref_emit_test_encoded) ./ cu(dc_std)
     dc_std = cu(dc_std)
 
-    c_gpu_part = cu(cat([ref_data_test_encoded[:, :, 1:n_sim] for _ in 1:n_sim]...;dims=3))
-    e_gpu_part = cat([e[:, :, 1:n_sim] for _ in 1:n_sim]...;dims=3)
-    P_gpu_part =  cu(cat([(k_params_test[:, :, 1:n_sim]) for _ in 1:10n_sim00]...;dims=3))
+    c_gpu_part = cu(cat([ref_data_test_encoded[:, :, 1:1000] for _ in 1:1000]...;dims=3))
+    e_gpu_part = cat([e[:, :, 1:1000] for _ in 1:1000]...;dims=3)
+    P_gpu_part =  cu(cat([(k_params_test[:, :, 1:1000]) for _ in 1:1000]...;dims=3))
 
     dcdt_pred(u,i) = (dudt((sparse_coeff_filtered_gpu), P_gpu_part[:, :, i], (u), (stoich_filtered_gpu), (umat_filtered_gpu), 1.0, i))
     function sindy_ude_pred!(du, u, p, t)
@@ -433,11 +473,14 @@ ref_data_test_encoded = encoder_(encoder, (ref_data_test), nruns)
     end
 
 #begin
-   
-    i_case = 1:n_sim
+#bench_vec = []  
+
+    i_case = 1:1
     prob2 = ODEProblem(sindy_ude_pred!, c_gpu_part[:, 1, i_case],  (times[1], times[end]))
+    #for i in 1:10 
     bench_gpu = @benchmark sol_sindy_ude = solve(prob2, Tsit5(), p = i_case, saveat=60)
+    #push!(bench_vec, bench_gpu)
     GC.gc()
+#end
 
-
-JLD2.jldsave("timing/bench_multiple_$(n_sim).jld"; bench_gpu)
+JLD2.jldsave("timing/bench_multiple_$(1).jld"; bench_gpu)
