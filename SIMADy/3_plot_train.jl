@@ -26,8 +26,6 @@ begin
     CUDA.allowscalar(false)
     CUDA.memory_status() 
     cd(Base.source_path()*"/..")
-    pwd()
-#################### Part 1: generate reference data ####################
 ndays = 4
 
 saveat = 60.0
@@ -40,14 +38,10 @@ ntimestep = 24*ndays +1
 startspec = 1
 
 JLD2.@load "../training_set.jld" ref_data_train ref_emit_train ref_params_train specname
-#ref_data = abs.(ref_data)
-#ref_emit = abs.(ref_emit)
-
 timelength = 60 * (ndays * 24) # minutes
 dt = 60.0
 startday = 2
 times = LinRange(0, timelength, ntimestep)
-#times = LinRange(0 , timelength, Int((timelength) / dt) + 1)
 tspan = (times[1], times[end])
 
 
@@ -58,11 +52,8 @@ n_latent_species = 6
 
 seed=1234
 Random.seed!(seed)
-# initialize an encoder, create functions of encoding/decoding processes
 encoder = abs.(Flux.glorot_uniform(Random.seed!(seed), n_latent_species, n_species)) 
 size_encoder = size(reshape(encoder,:))[1]
-
-#encoder = ones(n_latent_species, n_species) .* 1e-3 
 function encoder_(encoder,X_3d,batchsize)
     X_2d = reshape(X_3d,(n_species,:))
     x_2d = encoder * X_2d
@@ -74,50 +65,25 @@ function decoder_(decoder,x_3d,batchsize)
     X_2d = decoder' * x_2d
     X_3d = reshape(X_2d,(n_species,:, batchsize))
 end
-#n_latent_species = 10
 n_latent_emit_species = n_latent_species
 
-model_params = ref_params_train#ref_params
-
+model_params = ref_params_train
 sza = model_params[4:4,:,:]
-#sza1 = cat(sza[:,7:end,:],sza[:,1:6,:];dims=2)
-#sza2 = cat(sza[:,13:end,:],sza[:,1:12,:];dims=2)
-#T P SZA E
 model_params = cat(model_params[2:2,:,:],model_params[5:5,:,:], model_params[4:4,:,:]; dims=1)
 
-
-# Sympolics
-
-## mete and emit
 @parameters sza press tempk1 tempk2
 @parameters emit[1:n_latent_emit_species]
-#k = Num[sza; press; tempk/100.0; emit]
 @parameters k[1:size(model_params)[1]]
-#number of latent reaction rate Constant
 k = Num[
     sza;
-    
-    #sza1;
-    #sza2;
-    #cos(sza);
-    #sin(sza.*2.0);
-    #cos(sza.*2.0);
     press;
-    #(tempk^2)*exp(tempk^-1);
     tempk1;
     tempk2;
-    #emit;
-    #cos(sza);
-    #sin(sza);
     ]
 k_params = cat(max.(cos.(model_params[3:3,:,:]), 0),
                model_params[2:2,:,:], 
-               #(model_params[1:1,:,:].^2).*exp.(model_params[1:1,:,:].^-1),
                exp.(model_params[1:1,:,:].^-1),
                exp.((model_params[1:1,:,:].^-1).*(-1)),
-               #model_params[4:end,:,:]
-               #cos.(model_params[4:4,:,:])
-               #sin.(model_params[4:4,:,:])
                ;dims=1
               )
 
@@ -242,12 +208,10 @@ function calc_basis_size(u)
     n_latent_rxn_constant = length(k)
 
     simady_basis_size = nrxn * n_latent_rxn_constant
-    
-    #emis_basis_size = n_latent_emit_species #* n_latent_emit_species
-    basis_size = simady_basis_size #+ emis_basis_size
+    basis_size = simady_basis_size
+
     ## sparse coefficient ξ
-    
-    @parameters ξ[1:basis_size] #[bounds=(0.0, Inf)]
+    @parameters ξ[1:basis_size]
 
 
     function create_basis(T, u, ξ, basis_size, n_rxn, nrate)
@@ -349,19 +313,12 @@ function calc_basis_size(u)
                 end
             end   
 
-    
-    
-    
-    
-            
-    
         end
         rxs, umat
     end
 
 
 basis, umat = create_basis(Float64, u, ξ, simady_basis_size, nrxn, n_latent_rxn_constant)
-#basis = basis 
 umat = umat #|> gpu
 rsys = ReactionSystem(basis; name=:simady)
 stoich = netstoichmat(rsys) #|> gpu
@@ -381,9 +338,6 @@ basis_ = substitute(basis[i+1].rate, Dict(ξ[i*4+1]=> (sparse_coeff)[i*4+1]))
 basis_ = substitute(basis_, Dict(ξ[i*4+2]=> (sparse_coeff)[i*4+2]))
 basis_ = substitute(basis_, Dict(ξ[i*4+3]=> (sparse_coeff)[i*4+3]))
 basis_ = substitute(basis_, Dict(ξ[i*4+4]=> (sparse_coeff)[i*4+4]))
-#basis_ = substitute(basis_, Dict(sza => mean(k_params[1,:,1])))
-#basis_ = substitute(basis_, Dict(press => mean(k_params[2,:,1])))
-#basis_ = substitute(basis_, Dict(tempk => mean(k_params[3,:,1])))
     push!(rates_, basis_)
 end
 rates_
@@ -392,7 +346,6 @@ filtered_basis = []
 for i in 1-1:length(rates_)-1
     if rates_[i+1] !== 0f0
         temp_basis = basis[i+1]
-        #temp_basis = @set temp_basis.rate = 1.0
         basis_ = substitute(temp_basis.rate, Dict(ξ[i*4+1]=> (sparse_coeff)[i*4+1]))
         basis_ = substitute(basis_, Dict(ξ[i*4+2]=> (sparse_coeff)[i*4+2]))
         basis_ = substitute(basis_, Dict(ξ[i*4+3]=> (sparse_coeff)[i*4+3]))
@@ -438,19 +391,11 @@ end
 
 
 function dudt(ps, k, u, stoich, umat, weight)
-    #ξ_simady = ps[1:simady_basis_size]
-    #ξ_emis = ps[simady_basis_size+1:simady_basis_size+emis_basis_size]
-    #ξ, ps_nn = ps[1:basis_size], ps[basis_size+1:end]
-    #nn = re(ps_nn)
     u = reshape(u, (size(u)[1],:))
     k = reshape(k, (size(k)[1],:))
-    #k_emit = reshape(k_emit, (size(k_emit)[1],:))
 	oneplusu = [1; u]
-	ratelaws = oderatelaws(ps, k, oneplusu, umat)# for (col_k, col_u) in (eachcol(k), eachcol(oneplusu))]...;dims=2)
-    #ξ_emis_mat = abs.(ξ_emis)#transpose(reshape(ξ_emis, n_latent_emit_species, n_latent_emit_species))
-    #println(size(ξ_emis_mat))
-    #println(size(k_emit))
-	(stoich * ratelaws) #.+ (ξ_emis_mat .* k_emit)
+	ratelaws = oderatelaws(ps, k, oneplusu, umat)
+	(stoich * ratelaws)
 end
 
 
@@ -463,18 +408,10 @@ ref_data_min = minimum(ref_data_train[:,:,:];dims=(2,3))
 ref_data_normalized = (ref_data_train[:,:,:] .- ref_data_min ) ./(ref_data_max.-ref_data_min)
 replace!(ref_data_normalized, NaN => 0.0)
 batchsize = 30
-#training_dataset = Flux.Data.DataLoader((conc=(ref_data_encoded), emit=(ref_emit_encoded.*60.0), dcdt=(dc_encoded), p = (k_params)), batchsize = 30)
 training_dataset = DataLoader((conc=(ref_data_normalized), emit=(ref_emit_train), p = (k_params)), batchsize = batchsize)
 
 C0, E0, P0 = (first(training_dataset))
 
-
-
-
-
-
-
-#encoder_cpu = cpu(reshape(ps[1:size_encoder],(n_latent_species,:)))
 c = encoder_(cpu(encoder), ref_data_normalized, nruns)
 dc = diff(c;dims=2)./dt
 dc = cat(dc, dc[:,end:end,:];dims=2) #.- e.*60
@@ -485,7 +422,6 @@ function run_c(ps, dataset, dc_std)
     encoder, sparse_coeff = ps[1][1:size_encoder], ps[2]
     encoder = reshape(encoder,(n_latent_species,:))
     c, e, P = dataset
-     #|> cpu#.*  latent_species_dcdt_std  .+ e[:,:,i_case].*60)
     c = encoder_(encoder,c,nruns)
     e = encoder_(encoder,e,nruns)
     e = e ./ dc_std |> gpu
@@ -501,7 +437,6 @@ function run_c(ps, dataset, dc_std)
         end
         prob2 = ODEProblem(sindy_ude_pred!, cu(c)[:, 1, i_case], (times[1], times[end]))
         sol_sindy_ude = cpu(Array(solve(prob2, Tsit5(), saveat=60)))
-        #println(size(sol_sindy_ude))
         ref_data_encoded_pred[:,:,i_case] .= sol_sindy_ude
     end
     return ref_data_encoded_pred

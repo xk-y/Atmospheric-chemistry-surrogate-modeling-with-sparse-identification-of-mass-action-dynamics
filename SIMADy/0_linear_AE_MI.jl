@@ -45,15 +45,7 @@ times = LinRange(0, timelength, ntimestep)
 
 tspan = (times[1], times[end])
 
-
-
-
-#specname =  Array(CSV.read("../../../../1_dataset_preprocess/specname_3.csv", DataFrame))[startspec:end,2]
-#specname = specname[61:end]
-
 concerned_species_index = [4, 5, 6, 10, 13, 14]
-#specname[concerned_species_index]
-
 ref_data_max = maximum(ref_data_train[:,:,:];dims=(2,3))
 ref_data_min = minimum(ref_data_train[:,:,:];dims=(2,3))
 ref_data_normalized = (ref_data_train[:,:,:] .- ref_data_min ) ./(ref_data_max.-ref_data_min)
@@ -79,8 +71,6 @@ end
 
 batchsize = 30
 training_dataset = Flux.Data.DataLoader((conc=(ref_data_normalized), emit = (ref_emit_train)), batchsize = 30)
-#training_dataset = Flux.Data.DataLoader((conc=(ref_data), emit=(ref_emit.*60.0), dcdt=(ref_dcdt), p = (k_params)), batchsize = batchsize)
-#println(size(training_dataset.data))
 C0, E0 = (first(training_dataset))
 C0 = cu(C0)
 E0 = cu(E0)
@@ -99,55 +89,41 @@ end
 function loss_func(x, ps, print_flag)
 
     C, E = x
-    
     encoder = ps
-
     c = encoder_(encoder, C, batchsize)
     e = encoder_(encoder, E, batchsize)
-
     
     C_pred = decoder_(encoder, c, batchsize)
     E_pred = decoder_(encoder, e, batchsize)
 
-
-
-    #l_ozone = Flux.mse(C[i_ozone,:,:], C_pred[i_ozone,:,:]) 
-    #l_ozone_nox = Flux.mse(C[i_nox_o3,:,:], C_pred[i_nox_o3,:,:]) 
     l_concerned = Flux.mse(C[concerned_species_index,:,:], C_pred[concerned_species_index,:,:]) 
     l_all = Flux.mse(C, C_pred) 
     l_emit = Flux.mse(E_pred, E) 
-    #l_dcdt = Flux.mse(dCdt_pred[3:end,:,:], dCdt[3:end,:,:]) 
-
 
     latent_cov = covariance_matrix(reshape(c,(n_latent_species, :)))
     l_encoder_penalty =  sum(abs.(latent_cov .- (Diagonal(latent_cov))))
 
     
-    #l_ozone = l_ozone.* 1e2
     l_concerned = l_concerned .* 1e2
-    #l_ozone_nox = l_ozone_nox#.* 1e1
-    l_all = l_all #.* 1e5
-    l_emit = l_emit #.* 1e6
-    l_encoder_penalty = l_encoder_penalty #.* 1e0
+    l_all = l_all
+    l_emit = l_emit
+    l_encoder_penalty = l_encoder_penalty
 
 
     if print_flag == 1
-    #print("loss_ozone = $(@sprintf("%.3E", l_ozone));")
-    #print(" loss_ozone_nox = $(@sprintf("%.3E", l_ozone_nox));")
     print("l_concerned = $(@sprintf("%.3E", l_concerned))")
     print(" l_all = $(@sprintf("%.3E", l_all));")
     print(" l_emit = $(@sprintf("%.3E", l_emit));")
     print(" l_encoder_penalty = $(@sprintf("%.3E", l_encoder_penalty));\n")
 
-    #println("loss = $(loss)")
     end
     
-    loss = ( #l_ozone
+    loss = ( 
      l_concerned 
     + l_all
     + l_emit 
     + l_encoder_penalty
-    #+ l_encoder_penalty
+
 )
 
 
@@ -157,28 +133,17 @@ end
 
 function loss_func_output(x, ps)
 
-    #read data from the two argument arrays
     C, E = x
-    
     encoder = ps
-    #encoder = reshape(encoder,(n_latent_species,:))
-    
-    #encoding concentration and emission
     c = encoder_(encoder, C, batchsize)
     e = encoder_(encoder, E, batchsize)
-
     
     C_pred = decoder_(encoder, c, batchsize)
     E_pred = decoder_(encoder, e, batchsize)
 
-
-
-    #l_ozone = Flux.mse(C[i_ozone,:,:], C_pred[i_ozone,:,:]) 
-    #l_ozone_nox = Flux.mse(C[i_nox_o3,:,:], C_pred[i_nox_o3,:,:]) 
     l_concerned = Flux.mse(C[concerned_species_index,:,:], C_pred[concerned_species_index,:,:]) 
     l_all = Flux.mse(C, C_pred) 
     l_emit = Flux.mse(E_pred, E) 
-    #l_dcdt = Flux.mse(dCdt_pred[3:end,:,:], dCdt[3:end,:,:]) 
 
 
     latent_cov = covariance_matrix(reshape(c,(n_latent_species, :)))
@@ -213,7 +178,7 @@ function loss_func_output(x, ps)
     * l_all
     * l_emit 
     * l_encoder_penalty
-    #+ l_encoder_penalty
+
 )
 
 
@@ -233,7 +198,6 @@ function train!(loss, ps, data)
         Flux.update!(opt, ps, grad[1])
         ps .= abs.(ps)
     end
-    #ps
 end
 
 opt = Flux.ADAM(3e-4)

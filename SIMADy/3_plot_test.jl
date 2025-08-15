@@ -30,7 +30,6 @@ end
     CUDA.memory_status() 
     cd(Base.source_path()*"/..")
     pwd()
-#################### Part 1: generate reference data ####################
 ndays = 10
 
 saveat = 60.0
@@ -45,10 +44,8 @@ startspec = 1
 n_latent_species = 6
 seed=1234
 Random.seed!(seed)
-# initialize an encoder, create functions of encoding/decoding processes
 encoder = abs.(Flux.glorot_uniform(Random.seed!(seed), n_latent_species, n_species)) 
 size_encoder = size(reshape(encoder,:))[1]
-#encoder = ones(n_latent_species, n_species) .* 1e-3 
 function encoder_(encoder,X_3d,batchsize)
     X_2d = reshape(X_3d,(n_species,:))
     x_2d = encoder * X_2d
@@ -60,48 +57,29 @@ function decoder_(decoder,x_3d,batchsize)
     X_2d = decoder' * x_2d
     X_3d = reshape(X_2d,(n_species,:, batchsize))
 end
-#n_latent_species = 10
 n_latent_emit_species = n_latent_species
 
 
 JLD2.@load "c_test_utils.jld" ref_data_max ref_data_min dc_std
 JLD2.@load "../testing_set.jld" ref_data_test ref_emit_test ref_params_test specname
 
-model_params_test = ref_params_test#ref_params
+model_params_test = ref_params_test
 sza = model_params_test[4:4,:,:]
 model_params_test = cat(model_params_test[2:2,:,:],model_params_test[5:5,:,:], model_params_test[4:4,:,:]; dims=1)
-# Sympolics
 
-## mete and emit
 @parameters sza press tempk1 tempk2
 @parameters emit[1:n_latent_emit_species]
-#k = Num[sza; press; tempk/100.0; emit]
 @parameters k[1:size(model_params_test)[1]]
-#number of latent reaction rate Constant
 k = Num[
     sza;
-    
-    #sza1;
-    #sza2;
-    #cos(sza);
-    #sin(sza.*2.0);
-    #cos(sza.*2.0);
     press;
-    #(tempk^2)*exp(tempk^-1);
     tempk1;
     tempk2;
-    #emit;
-    #cos(sza);
-    #sin(sza);
     ]
 k_params_test = cat(max.(cos.(model_params_test[3:3,:,:]), 0),
                model_params_test[2:2,:,:], 
-               #(model_params[1:1,:,:].^2).*exp.(model_params[1:1,:,:].^-1),
                exp.(model_params_test[1:1,:,:].^-1),
                exp.((model_params_test[1:1,:,:].^-1).*(-1)),
-               #model_params[4:end,:,:]
-               #cos.(model_params[4:4,:,:])
-               #sin.(model_params[4:4,:,:])
                ;dims=1
               )
 
@@ -226,12 +204,8 @@ function calc_basis_size(u)
     n_latent_rxn_constant = length(k)
 
     simady_basis_size = nrxn * n_latent_rxn_constant
-    
-    #emis_basis_size = n_latent_emit_species #* n_latent_emit_species
-    basis_size = simady_basis_size #+ emis_basis_size
-    ## sparse coefficient ξ
-    
-    @parameters ξ[1:basis_size] #[bounds=(0.0, Inf)]
+    basis_size = simady_basis_size 
+    @parameters ξ[1:basis_size]
 
 
     function create_basis(T, u, ξ, basis_size, n_rxn, nrate)
@@ -345,7 +319,6 @@ function calc_basis_size(u)
 
 
 basis, umat = create_basis(Float64, u, ξ, simady_basis_size, nrxn, n_latent_rxn_constant)
-#basis = basis 
 umat = umat #|> gpu
 rsys = ReactionSystem(basis; name=:simady)
 stoich = netstoichmat(rsys) #|> gpu
@@ -365,9 +338,6 @@ basis_ = substitute(basis[i+1].rate, Dict(ξ[i*4+1]=> (sparse_coeff)[i*4+1]))
 basis_ = substitute(basis_, Dict(ξ[i*4+2]=> (sparse_coeff)[i*4+2]))
 basis_ = substitute(basis_, Dict(ξ[i*4+3]=> (sparse_coeff)[i*4+3]))
 basis_ = substitute(basis_, Dict(ξ[i*4+4]=> (sparse_coeff)[i*4+4]))
-#basis_ = substitute(basis_, Dict(sza => mean(k_params[1,:,1])))
-#basis_ = substitute(basis_, Dict(press => mean(k_params[2,:,1])))
-#basis_ = substitute(basis_, Dict(tempk => mean(k_params[3,:,1])))
     push!(rates_, basis_)
 end
 rates_
@@ -376,7 +346,6 @@ filtered_basis = []
 for i in 1-1:length(rates_)-1
     if rates_[i+1] !== 0f0
         temp_basis = basis[i+1]
-        #temp_basis = @set temp_basis.rate = 1.0
         basis_ = substitute(temp_basis.rate, Dict(ξ[i*4+1]=> (sparse_coeff)[i*4+1]))
         basis_ = substitute(basis_, Dict(ξ[i*4+2]=> (sparse_coeff)[i*4+2]))
         basis_ = substitute(basis_, Dict(ξ[i*4+3]=> (sparse_coeff)[i*4+3]))
@@ -425,19 +394,11 @@ end
 
 
 function dudt(ps, k, u, stoich, umat, weight)
-    #ξ_simady = ps[1:simady_basis_size]
-    #ξ_emis = ps[simady_basis_size+1:simady_basis_size+emis_basis_size]
-    #ξ, ps_nn = ps[1:basis_size], ps[basis_size+1:end]
-    #nn = re(ps_nn)
     u = reshape(u, (size(u)[1],:))
     k = reshape(k, (size(k)[1],:))
-    #k_emit = reshape(k_emit, (size(k_emit)[1],:))
 	oneplusu = [1; u]
-	ratelaws = oderatelaws(ps, k, oneplusu, umat)# for (col_k, col_u) in (eachcol(k), eachcol(oneplusu))]...;dims=2)
-    #ξ_emis_mat = abs.(ξ_emis)#transpose(reshape(ξ_emis, n_latent_emit_species, n_latent_emit_species))
-    #println(size(ξ_emis_mat))
-    #println(size(k_emit))
-	(stoich * ratelaws) #.+ (ξ_emis_mat .* k_emit)
+	ratelaws = oderatelaws(ps, k, oneplusu, umat)
+	(stoich * ratelaws)
 end
 
 
@@ -452,7 +413,6 @@ ref_data_test_encoded = encoder_(encoder, (ref_data_test), nruns)
 function run_c_test(ps, dataset, dc_std) 
     sparse_coeff = cu(ps)
     c, e, P = dataset
-     #|> cpu#.*  latent_species_dcdt_std  .+ e[:,:,i_case].*60)
      e = cu(e ./ dc_std )
      dc_std = cu(dc_std)
     P = cu(P)
@@ -492,27 +452,22 @@ open("plots/simady/rmse_test.txt", "w") do file
     write(file, "overall; rmse = $(rmsd(ref_data_test_pred[:,:,:],ref_data_test[:,:,:])), rms = $(mean(ref_data_test[:,:,:].^2)^0.5)) \n")
 end
 
-
-
-#for i_spec in 13:13
 percent = 100
 err_ozone = ref_data_test_pred[i_spec,:,:] - ref_data_test[i_spec,:,:]
 upper_ozone_100, lower_ozone_100 = [], []
-for i in 1:ntimestep#length(times_test)
+for i in 1:ntimestep
     push!(upper_ozone_100, percentile(err_ozone[i,:],percent+(100-percent)/2))
     push!(lower_ozone_100, percentile(err_ozone[i,:],(100-percent)/2))
 end
 percent = 90
-#err_ozone_100 = ref_data_pred[i_spec,:,:] - ref_data_train[i_spec,:,:]
 upper_ozone_90, lower_ozone_90 = [], []
-for i in 1:ntimestep#length(times_test)
+for i in 1:ntimestep
     push!(upper_ozone_90, percentile(err_ozone[i,:],percent+(100-percent)/2))
     push!(lower_ozone_90, percentile(err_ozone[i,:],(100-percent)/2))
 end
 percent = 80
-#err_ozone_80 = ref_data_pred[i_spec,:,:] - ref_data_train[i_spec,:,:]
 upper_ozone_80, lower_ozone_80 = [], []
-for i in 1:ntimestep#length(times_test)
+for i in 1:ntimestep
     push!(upper_ozone_80, percentile(err_ozone[i,:],percent+(100-percent)/2))
     push!(lower_ozone_80, percentile(err_ozone[i,:],(100-percent)/2))
 end
@@ -523,13 +478,11 @@ plot_error =  plot(times./1440,mean(err_ozone;dims=2)[:];
                    label="100%", 
                    xlabel="Time (day)",
                    xticks=(0:2:10),
-                   #ylabel = "$(specs[1,ispec]) (ppm)",
                    titlefontsize = 16,
                    xtickfontsize = 16, ytickfontsize = 16, 
                    xlabelfontsize = 18, ylabelfontsize = 18,
                    legendfontsize = 20,
                    linewidth=0,
-                   #yticks=[-0.3, -0.2,-0.1,0,0.1,0.2,0.3],
                    left_margin = 8Plots.mm,
                    bottom_margin = 12Plots.mm,
                    formatter = identity,
@@ -554,25 +507,17 @@ function plot_extreme_cases(scenario, err)
             ptemp = plot(time./1440, ref[:,i];
                          legend=((no==1 && scenario=="Worst") ? :topright : :none), 
                          labels="Reference",
-                         #title = "rmse = $(round(err_[i]; digits = 3))",
-                         
                          xtickfontsize = 14, ytickfontsize = 14, 
                          xlabelfontsize = 18, ylabelfontsize = 18,
                          legendfontsize = 20,
                          xticks=(0:2:10),
-                         #xlim=(0,4),
-                         #xlabel = (scenario == "Median" && no == 3 ? "Time (day)" : ""),
                          ylabel = (scenario == "Best" && no == 2 ? "$(specname[i_spec]) (ppb)" : ""),
-                         #ylim=((no==1 && scenario=="Worst") ? (0.0,0.335) : :best),
                          left_margin = (scenario == "Best" ? 8Plots.mm : 4Plots.mm ),
                          right_margin = (scenario == "Worst" ? 3Plots.mm : 1Plots.mm ),
                          bottom_margin = (no == 3 ? 7Plots.mm : 0Plots.mm ),
                          top_margin = (no == 1 ? 7Plots.mm : 3Plots.mm ),
                          color=:black,
                          formatter = identity)
-            #plot!(time./1440, pred[:,i]; 
-            #      labels="SINDy",
-            #      linestyle=:dash, color=:red)
             plot!(time./1440, pred[:,i]; 
                   labels="SIMADy",
                   linestyle=:dash, color=:red)

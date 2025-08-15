@@ -30,16 +30,12 @@ cd(Base.source_path()*"/..")
 pwd()
 rmse_ozone = []
 for i_latent_species in 2:10
-# Open the file and read the first float
 open("results/$(i_latent_species)/simady/rmse_test.txt", "r") do file
     for line in eachline(file)
-        # Use a regular expression to find the first floating-point number in the line
         first_float = match(r"\d+\.\d+", line)
-        
         if first_float !== nothing
-            # Parse the matched string as a Float64 and append it to the vector
             push!(rmse_ozone, parse(Float64, first_float.match))
-            break  # Exit the loop after finding the first float
+            break 
         end
     end
 end
@@ -63,7 +59,7 @@ plot_rmse = plot(rmse_ozone,
         right_margin = 5Plots.mm,
         bottom_margin = 2Plots.mm
 )
-#savefig(plot_rmse, "rmse_ozone.svg")
+
 
 times_mcm = []
 for i in 0:9
@@ -71,10 +67,8 @@ for i in 0:9
 filename = "scenarios_timing/scenario_$(i)/run_init.log"
 lines = readlines(filename)
 
-# Filter lines starting with "Elapsed"
 elapsed_lines = filter(line -> startswith(line, " Elapsed time for the MCM integration step:"), lines)
 
-# Extract times from the filtered lines
 times = sum([parse(Float64, match(r"([0-9.]+[Ee]?-?[0-9]*)", line).match) for line in elapsed_lines][end-14400:end])
 
     push!(times_mcm,times)
@@ -86,7 +80,7 @@ cpu_time = []
 gpu_time = []
 
 for i_latent_species in 2:10
-#i_latent_species = 2
+
     path = "results/$(i_latent_species)/timing/"
     JLD2.@load path*"bench_single.jld" bench_cpu_vec bench_gpu_vec
     cpu_time_temp = []
@@ -104,16 +98,13 @@ gpu_time = log10.(gpu_time)
 mean(gpu_time)
 rmse_ozone = []
 for i_latent_species in 2:10
-# Open the file and read the first float
+
 open("results/$(i_latent_species)/plots/rmse_test.txt", "r") do file
     for line in eachline(file)
-        # Use a regular expression to find the first floating-point number in the line
         first_float = match(r"\d+\.\d+", line)
-        
         if first_float !== nothing
-            # Parse the matched string as a Float64 and append it to the vector
             push!(rmse_ozone, parse(Float64, first_float.match))
-            break  # Exit the loop after finding the first float
+            break 
         end
     end
 end
@@ -147,8 +138,6 @@ plot!(gpu_time,
         linewidth = 2,
         label = "SIMADy (GPU)",
         legend=:none,
-        #xlabel = "Latent species",
-        #ylabel = "Log10(Computational Time in Seconds)",
         color = :red,
 )
 plot!(
@@ -171,7 +160,7 @@ plot!(twinx(), [1,2,3,4,5,6,7,8,9], rmse_ozone,
         xtickfontsize = 14, ytickfontsize = 14, 
         xlabelfontsize = 16, ylabelfontsize = 16,
         legendfontsize = 16,grid = true,
-        legend=:none,#, label = ["Equation terms" "Integration timesteps"],
+        legend=:none,
         ylabel = "Ozone error (%)",
 )
 
@@ -180,22 +169,14 @@ savefig(plot_timingA, "timingA.svg")
 mean_flag =  [1, 1, 1, 1,  1,  1,  1,   1,   1,   1,    1,    0,    0,     0,     0]
 scale_case = [1,  10,  100,  1000,  10000, 100000]
 
-#mean_flag =  [1, 1, 1,  1,  1,  1,   1,    0,    0,     0,     0]
-#scale_case = [1, 5, 10, 20, 50, 100, 1000, 5000, 10000, 50000, 100000]
 
 
 begin
     cpu_time_vec = []
     for (i, case) in enumerate(scale_case)
         cpu_time_temp_mean = []
-        #if mean_flag[i] == 1
-        #    JLD2.@load "code/$(3)/cpu/code/$(case)/timing/bench_multiple_$(case).jld" bench_vec
-        #    push!(cpu_time_vec, maximum([minimum(bench_vec[i].times) for i in 1:10]))
-        #else
             JLD2.@load "code/cpu/$(case)/timing/bench_multiple_$(case).jld" bench_cpu
             push!(cpu_time_vec, minimum(bench_cpu.times))
-        #end
-
     end
     cpu_time_vec = cpu_time_vec ./ 1e9
 end
@@ -203,14 +184,8 @@ begin
     gpu_time_vec = []
     for (i, case) in enumerate(scale_case)
         gpu_time_temp_mean = []
-        #if mean_flag[i] == 1
-        #    JLD2.@load "code/$(3)/gpu/code/$(case)/timing/bench_multiple_$(case).jld" bench_vec
-        #    push!(gpu_time_vec, maximum([minimum(bench_vec[i].times) for i in 1:10]))
-        #else
             JLD2.@load "code/gpu/$(case)/timing/bench_multiple_$(case).jld" bench_gpu
             push!(gpu_time_vec, minimum(bench_gpu.times))
-        #end
-
     end
     gpu_time_vec = gpu_time_vec ./ 1e9
 end
@@ -223,7 +198,6 @@ x = Int.(range(0, 5, length=6) )
 plot_timingB = plot(
         x,
         log10.(cpu_time_vec),
-        #x = [1,10,100,200,300,400,500,600,700,800,900,1000],
         marker = (:square,8),
         linewidth = 2,
         label = "SIMADy (CPU)",
@@ -234,7 +208,6 @@ plot_timingB = plot(
         yticks=-1:1:8,
         xformatter=xtick -> "10^{$(Int(round(xtick)))}",
         yformatter=ytick -> "10^{$(Int(round(ytick)))}",
-        #ylim = (-2,3),
         titlefontsize = 17,
         xtickfontsize = 10, ytickfontsize = 10, 
         xlabelfontsize = 16, ylabelfontsize = 16,
